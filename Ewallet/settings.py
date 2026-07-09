@@ -14,7 +14,9 @@ DEBUG = False
 ALLOWED_HOSTS = [
     '127.0.0.1',
     'localhost',
-    '.vercel.app',
+    'https://chain-hook-client.vercel.app/',
+    'https://chain-hook-client.vercel.app',
+    'chain-hook-client.vercel.app',
 ]
 
 
@@ -64,6 +66,7 @@ SIMPLE_JWT = {
 
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',
+    'https://chain-hook-client.vercel.app'
 ]
 
 MIDDLEWARE = [
