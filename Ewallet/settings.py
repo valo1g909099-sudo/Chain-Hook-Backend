@@ -14,11 +14,9 @@ DEBUG = False
 ALLOWED_HOSTS = [
     '127.0.0.1',
     'localhost',
-    'https://chain-hook-client.vercel.app/',
-    'https://chain-hook-client.vercel.app',
-    'chain-hook-client.vercel.app',
+    'chain-hook-backend-evj9.vercel.app',
+    '.vercel.app',  # covers every Vercel preview URL, e.g. chain-hook-backend-evj9-lc8h1g7oc-....vercel.app
 ]
-
 
 
 INSTALLED_APPS = [
