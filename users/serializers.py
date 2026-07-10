@@ -2,9 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from .models import User, Client
 
-# ==========================================
-# USER SERIALIZERS
-# ==========================================
+
 
 class UserSerializer(serializers.ModelSerializer):
     """
@@ -44,9 +42,6 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return user
 
 
-# ==========================================
-# CLIENT SERIALIZERS
-# ==========================================
 
 class ClientSerializer(serializers.ModelSerializer):
     """
@@ -75,7 +70,7 @@ class ClientSerializer(serializers.ModelSerializer):
         """
         Create a new client with auto-generated API key
         """
-        validated_data.pop('api_key', None)  # Remove if accidentally passed
+        validated_data.pop('api_key', None)  
         return super().create(validated_data)
 
 
@@ -111,3 +106,31 @@ class ClientRegenerateKeySerializer(serializers.Serializer):
         except Client.DoesNotExist:
             raise serializers.ValidationError("Client not found")
         return data
+    
+
+
+
+class GenerateClientTokenSerializer(serializers.Serializer):
+   
+    FLOW_CHOICES = (('login', 'login'), ('payment', 'payment'))
+
+    type = serializers.ChoiceField(choices=FLOW_CHOICES)
+    platform_name = serializers.CharField(max_length=255, trim_whitespace=True)
+    base_url = serializers.CharField(max_length=500, trim_whitespace=True)
+    merchant_name = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, trim_whitespace=True
+    )
+    total_price = serializers.CharField(
+        max_length=64, required=False, allow_blank=True, trim_whitespace=True
+    )
+    api_key = serializers.CharField(max_length=255, trim_whitespace=True)
+
+    def validate(self, attrs):
+        flow_type = attrs['type']
+        if flow_type == 'payment' and not attrs.get('total_price'):
+            raise serializers.ValidationError(
+                {'total_price': 'Required for payment flows.'}
+            )
+        if not attrs.get('merchant_name'):
+            attrs['merchant_name'] = attrs['platform_name']
+        return attrs
