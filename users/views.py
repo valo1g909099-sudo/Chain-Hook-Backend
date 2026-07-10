@@ -7,9 +7,11 @@ from rest_framework import status, generics, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
-
+from django.core import signing
 from .models import User, Client, UserActivityLog
 from .serializers import UserSerializer, UserCreateSerializer
+from .serializers import GenerateClientTokenSerializer 
+from django.core.signing import BadSignature, SignatureExpired
 
 
 def get_client_ip(request):
@@ -408,3 +410,131 @@ class LogoutView(APIView):
         )
 
         return Response(status=status.HTTP_205_RESET_CONTENT)
+    
+
+
+CLIENT_TOKEN_SALT = 'oauth-client-id-v1'
+CLIENT_TOKEN_MAX_AGE = 60 * 10 
+
+
+def decode_client_token(client_id: str):
+    
+    try:
+        payload = signing.loads(client_id, salt=CLIENT_TOKEN_SALT, max_age=CLIENT_TOKEN_MAX_AGE)
+    except SignatureExpired:
+        raise ValueError('This authorization link has expired. Please generate a new one.')
+    except BadSignature:
+        raise ValueError('Invalid or tampered client token.')
+
+    try:
+        client = Client.objects.get(pk=payload['client_db_id'], is_active=True)
+    except (Client.DoesNotExist, KeyError):
+        raise ValueError('Client no longer exists or is inactive.')
+
+    return payload, client
+
+
+class GenerateClientTokenView(APIView):
+   
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = GenerateClientTokenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        api_key = data['api_key']
+        platform_name = data['platform_name']
+        base_url = data['base_url']
+        flow_type = data['type']
+
+        try:
+            client = Client.objects.get(api_key=api_key, is_active=True)
+        except Client.DoesNotExist:
+            return Response(
+                {'detail': 'Invalid API key.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if (client.name or '').strip().lower() != platform_name.strip().lower():
+            return Response(
+                {'detail': 'platform_name does not match the client registered for this API key.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if client.base_url.rstrip('/') != base_url.rstrip('/'):
+            return Response(
+                {'detail': 'base_url does not match the client registered for this API key.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if flow_type == 'login' and not client.for_login:
+            return Response(
+                {'detail': f"Client '{client.name}' is not authorized for login flows."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if flow_type == 'payment' and not client.for_payment:
+            return Response(
+                {'detail': f"Client '{client.name}' is not authorized for payment flows."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        payload = {
+            'client_db_id': client.id,
+            'platform_name': client.name,
+            'platform_url': client.base_url,
+            'type': flow_type,
+            'merchant_name': data['merchant_name'],
+            'total_price': data.get('total_price') or None,
+        }
+        token = signing.dumps(payload, salt=CLIENT_TOKEN_SALT, compress=True)
+
+        return Response({'client_id': token}, status=status.HTTP_200_OK)
+
+
+class ValidateClientTokenView(APIView):
+    """
+    GET /api/clients/validate-token/?client_id=<token>
+
+    Drop-in replacement for the old ValidateClientView. Instead of
+    base64-decoding arbitrary JSON, it verifies the signature that only
+    the server could have produced.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        client_id = request.query_params.get('client_id', '').strip()
+
+        if not client_id:
+            return Response(
+                {'valid': False, 'reason': 'missing_client_id',
+                 'message': 'No client_id was provided in the request.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payload, client = decode_client_token(client_id)
+        except ValueError as exc:
+            return Response(
+                {'valid': False, 'reason': 'invalid_token', 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                'valid': True,
+                'reason': 'ok',
+                'message': 'Client token validated successfully.',
+                'client': {
+                    'id': client.id,
+                    'name': client.name,
+                    'base_url': client.base_url,
+                    'for_login': client.for_login,
+                    'for_payment': client.for_payment,
+                },
+                'payload': payload,
+            },
+            status=status.HTTP_200_OK,
+        )
