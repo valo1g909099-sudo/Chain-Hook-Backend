@@ -240,6 +240,10 @@ class GenerateClientTokenView(APIView):
     Server-side minting of a signed client_id. Requires a valid api_key
     that matches a registered, active Client, plus a platform_name/base_url
     that match that Client's record.
+
+    `callback_info` is optional. If the API client provides it, it is
+    embedded in the signed token payload as-is. If omitted, the token is
+    generated normally with no error.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -292,6 +296,12 @@ class GenerateClientTokenView(APIView):
             'merchant_name': data['merchant_name'],
             'total_price': data.get('total_price') or None,
         }
+
+        # callback_info is optional — only include it in the token payload
+        # if the API client actually provided it. No error if omitted.
+        if 'callback_info' in data:
+            payload['callback_info'] = data['callback_info']
+
         token = signing.dumps(payload, salt=CLIENT_TOKEN_SALT, compress=True)
 
         return Response({'client_id': token}, status=status.HTTP_200_OK)
