@@ -1,6 +1,8 @@
 from decimal import Decimal
 import random
-import requests
+import json
+import urllib.request
+import urllib.error
 from django.utils import timezone
 from django.core import signing
 from django.core.signing import BadSignature, SignatureExpired
@@ -49,7 +51,8 @@ def decode_client_token(client_id: str):
 def trigger_callback_if_present(payload):
     """
     Looks for payload['callback_info']['callback_url'].
-    If found: POSTs the full payload['callback_info'] object as JSON body to that URL.
+    If found: POSTs the full payload['callback_info'] object as JSON body to that URL,
+    using only the Python standard library (no external dependency required).
     If not found (either key missing): does nothing, no error raised.
     If the HTTP request itself fails: caught, no error raised.
     """
@@ -65,14 +68,23 @@ def trigger_callback_if_present(payload):
 
     result['attempted'] = True
     try:
-        response = requests.post(
+        body = json.dumps(callback_info).encode('utf-8')
+        req = urllib.request.Request(
             callback_url,
-            json=callback_info,
-            timeout=CALLBACK_TIMEOUT_SECONDS,
+            data=body,
+            headers={'Content-Type': 'application/json'},
+            method='POST',
         )
-        result['success'] = response.ok
-        result['detail'] = f'HTTP {response.status_code}'
-    except requests.RequestException as exc:
+        with urllib.request.urlopen(req, timeout=CALLBACK_TIMEOUT_SECONDS) as response:
+            status_code = response.getcode()
+            result['success'] = 200 <= status_code < 300
+            result['detail'] = f'HTTP {status_code}'
+    except urllib.error.HTTPError as exc:
+        # Server responded with a non-2xx status
+        result['success'] = False
+        result['detail'] = f'HTTP {exc.code}'
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        # Network failure, DNS failure, timeout, malformed URL, etc.
         result['success'] = False
         result['detail'] = str(exc)
 
@@ -344,7 +356,8 @@ class PaymentView(APIView):
     signed-token mechanism. After the payment is successfully processed
     and recorded, if the decoded token payload contains
     callback_info.callback_url, a POST request is fired to that URL with
-    the full callback_info object as the JSON body.
+    the full callback_info object as the JSON body (via urllib, no
+    external dependency).
 
     Missing client_id, invalid/expired token, missing callback_info, or
     missing callback_url are all silently skipped -- never an error.
