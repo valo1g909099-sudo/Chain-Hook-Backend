@@ -1,6 +1,9 @@
 from decimal import Decimal
 import random
+import requests
 from django.utils import timezone
+from django.core import signing
+from django.core.signing import BadSignature, SignatureExpired
 from django.db.models import Sum
 from datetime import timedelta
 from rest_framework import status
@@ -11,8 +14,69 @@ from rest_framework.permissions import IsAuthenticated
 from .models import Wallet, Transaction, CurrencyPriceHistory, UserCurrency
 from .serializers import WalletSerializer, TransactionSerializer, CurrencyPriceHistorySerializer
 
+# Must match the users app's Client model
+from users.models import Client  # adjust import path to your actual app label
+
 MONTHLY_CAP = Decimal('10000000.00')
 SUPPORTED_CURRENCIES = {'USD', 'EUR', 'JPY', 'GBP'}
+
+# Must be IDENTICAL to CLIENT_TOKEN_SALT in the users app's views.py
+CLIENT_TOKEN_SALT = 'oauth-client-id-v1'
+CLIENT_TOKEN_MAX_AGE = 60 * 10  # 10 minutes
+CALLBACK_TIMEOUT_SECONDS = 5
+
+
+def decode_client_token(client_id: str):
+    """
+    Verify and decode a signed client_id token.
+    Raises ValueError with a user-facing message on any failure.
+    """
+    try:
+        payload = signing.loads(client_id, salt=CLIENT_TOKEN_SALT, max_age=CLIENT_TOKEN_MAX_AGE)
+    except SignatureExpired:
+        raise ValueError('This authorization link has expired. Please generate a new one.')
+    except BadSignature:
+        raise ValueError('Invalid or tampered client token.')
+
+    try:
+        client = Client.objects.get(pk=payload['client_db_id'], is_active=True)
+    except (Client.DoesNotExist, KeyError):
+        raise ValueError('Client no longer exists or is inactive.')
+
+    return payload, client
+
+
+def trigger_callback_if_present(payload):
+    """
+    Looks for payload['callback_info']['callback_url'].
+    If found: POSTs the full payload['callback_info'] object as JSON body to that URL.
+    If not found (either key missing): does nothing, no error raised.
+    If the HTTP request itself fails: caught, no error raised.
+    """
+    result = {'attempted': False, 'success': False, 'detail': None}
+
+    callback_info = payload.get('callback_info')
+    if not isinstance(callback_info, dict):
+        return result
+
+    callback_url = callback_info.get('callback_url')
+    if not callback_url or not isinstance(callback_url, str):
+        return result
+
+    result['attempted'] = True
+    try:
+        response = requests.post(
+            callback_url,
+            json=callback_info,
+            timeout=CALLBACK_TIMEOUT_SECONDS,
+        )
+        result['success'] = response.ok
+        result['detail'] = f'HTTP {response.status_code}'
+    except requests.RequestException as exc:
+        result['success'] = False
+        result['detail'] = str(exc)
+
+    return result
 
 
 def _validate_txn(user, currency, amount, recipient_wallet=None):
@@ -273,6 +337,18 @@ class TransferView(APIView):
 
 
 class PaymentView(APIView):
+    """
+    POST /api/wallet/payment/
+
+    If `client_id` is provided in the request body, it's decoded using the
+    signed-token mechanism. After the payment is successfully processed
+    and recorded, if the decoded token payload contains
+    callback_info.callback_url, a POST request is fired to that URL with
+    the full callback_info object as the JSON body.
+
+    Missing client_id, invalid/expired token, missing callback_info, or
+    missing callback_url are all silently skipped -- never an error.
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -280,6 +356,7 @@ class PaymentView(APIView):
         amount_str = request.data.get('amount')
         entity = request.data.get('entity', 'Merchant Payment')
         method = request.data.get('method', 'Chain Hook Secure Pay')
+        client_id = request.data.get('client_id')
 
         if amount_str is None:
             return Response({'detail': 'amount is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -294,6 +371,14 @@ class PaymentView(APIView):
 
         if currency not in SUPPORTED_CURRENCIES:
             return Response({'detail': f'Unsupported currency: {currency}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Decode token if provided. Any failure just means no callback later.
+        token_payload = None
+        if client_id:
+            try:
+                token_payload, _client = decode_client_token(client_id)
+            except ValueError:
+                token_payload = None
 
         error, wallet = _validate_txn(request.user, currency, amount)
         if error:
@@ -320,11 +405,19 @@ class PaymentView(APIView):
 
         tx_id = 'TX-' + ''.join([str(random.randint(0, 9)) for _ in range(8)])
 
-        return Response({
+        response_data = {
             'detail': 'Payment processed successfully.',
             'tx_id': tx_id,
             'wallet': WalletSerializer(wallet).data,
-        })
+        }
+
+        # Payment confirmed -- now attempt the callback.
+        if token_payload:
+            callback_result = trigger_callback_if_present(token_payload)
+            if callback_result['attempted']:
+                response_data['callback'] = callback_result
+
+        return Response(response_data)
 
 
 class CurrencyPriceHistoryView(APIView):
