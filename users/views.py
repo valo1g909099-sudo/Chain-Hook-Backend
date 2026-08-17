@@ -303,7 +303,8 @@ class GenerateClientTokenView(APIView):
             payload['callback_info'] = data['callback_info']
 
         token = signing.dumps(payload, salt=CLIENT_TOKEN_SALT, compress=True)
-
+        print(token)
+        print(payload)
         return Response({'client_id': token}, status=status.HTTP_200_OK)
 
 
