@@ -49,6 +49,7 @@ def decode_client_token(client_id: str):
 
 
 def trigger_callback_if_present(payload):
+    print(payload)
     """
     Looks for payload['callback_info']['callback_url'].
     If found: POSTs the full payload['callback_info'] object as JSON body to that URL,
@@ -429,7 +430,7 @@ class PaymentView(APIView):
             callback_result = trigger_callback_if_present(token_payload)
             if callback_result['attempted']:
                 response_data['callback'] = callback_result
-
+        
         return Response(response_data)
 
 
