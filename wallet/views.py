@@ -366,6 +366,7 @@ class PaymentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        print(request.data)
         currency = request.data.get('currency', 'USD').strip().upper()
         amount_str = request.data.get('amount')
         entity = request.data.get('entity', 'Merchant Payment')
